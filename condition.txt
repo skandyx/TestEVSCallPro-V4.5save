@@ -1,0 +1,84 @@
+======================================================================
+  Règles de Distribution des Fiches aux Agents - EVSCallPro
+======================================================================
+
+Ce document détaille l'ensemble des conditions et des logiques utilisées par le système pour présenter automatiquement une fiche (un contact) à un agent disponible.
+
+---
+### Condition 1 : Prérequis de l'Agent
+---
+
+Pour qu'un agent puisse recevoir une fiche, il doit impérativement remplir les conditions suivantes :
+
+1.  **Statut de l'Agent** : L'agent doit être dans l'état **"En Attente"**. S'il est en pause, en appel, en post-appel, ou déconnecté, aucune fiche ne lui sera présentée.
+2.  **Campagne Active** : L'agent doit avoir sélectionné une **campagne active** pour la numérotation dans son interface. S'il n'a sélectionné aucune campagne, il ne recevra pas de fiches.
+
+---
+### Condition 2 : Critères de Sélection de la Fiche
+---
+
+Lorsqu'un agent est prêt à recevoir un contact, le système recherche dans la base de données une fiche qui respecte **TOUTES** les règles suivantes, dans l'ordre :
+
+1.  **Appartenance à la Campagne** : La fiche doit appartenir à la campagne active sélectionnée par l'agent.
+
+2.  **Statut de la Fiche** : La fiche doit avoir le statut **"pending" (en attente)**. Les fiches déjà qualifiées ou en cours de traitement par un autre agent sont exclues.
+
+3.  **Condition de Relance (Rappel Campagne)** :
+    *   Si une fiche a été qualifiée avec "Relance" et qu'une date/heure de relance a été programmée, la fiche ne sera présentée qu'**après** que cette date et heure soient atteintes.
+    *   Les fiches sans date de relance sont immédiatement éligibles.
+
+4.  **Logique des Quotas** (s'applique uniquement si les quotas sont activés sur la campagne) :
+    *   **Si les quotas sont désactivés** : Cette condition est ignorée.
+    *   **Si les quotas sont activés** : Une fiche n'est sélectionnée que si elle correspond à **au moins une règle de quota qui n'est pas encore remplie**.
+        *   Une règle est "remplie" lorsque son compteur (`currentCount`) a atteint sa limite (`limit`).
+        *   Exemple : Si un quota "Code Postal commence par 75" a une limite de 50 et que le compteur est à 50, toutes les fiches de Paris seront ignorées jusqu'à ce que tous les autres quotas soient remplis.
+
+---
+### Condition 3 : Ordre de Priorité et Concurrence
+---
+
+Parmi toutes les fiches qui remplissent les conditions ci-dessus, le système applique les règles suivantes pour choisir LA fiche à présenter :
+
+1.  **Ordre de Présentation** : Les fiches sont présentées selon le principe du **"Premier entré, premier sorti" (FIFO)**. La plus ancienne fiche importée qui remplit les conditions est toujours présentée en premier.
+
+2.  **Gestion de la Concurrence** : Pour éviter que deux agents n'appellent la même personne en même temps, le système utilise un mécanisme de verrouillage. Quand un agent demande une fiche, le système "verrouille" la première fiche disponible et la lui attribue. Si un autre agent fait une demande au même instant, le système ignorera la fiche verrouillée et lui attribuera la suivante, garantissant une distribution unique et sans doublon.
+
+---
+### Condition 4 : Règles de Concurrence Stricte et Rappels Personnels
+---
+
+Ces règles sont impératives pour garantir l'intégrité des données et le respect du travail des agents.
+
+1.  **Verrouillage Exclusif des Fiches**
+    *   **Principe** : Une fiche ne doit **jamais** être accessible en modification par deux utilisateurs simultanément.
+    *   **Comportement Attendu** : Si un agent accède à une fiche (que ce soit par distribution automatique ou via la recherche manuelle), cette fiche est immédiatement **verrouillée** pour cet agent. Si un second agent tente d'accéder à la même fiche, il recevra un message de blocage indiquant : _« Cette fiche est actuellement en cours d’édition par l’agent XXXX. »_
+    *   **Déverrouillage** : La fiche est automatiquement déverrouillée lorsque l'agent la qualifie, la ferme, ou se déconnecte, en respectant les nouvelles règles de la Condition 5.
+
+2.  **Exclusivité des Fiches Vierges**
+    *   **Principe** : Une fiche vierge, créée manuellement par un agent, lui est exclusivement réservée.
+    *   **Comportement Attendu** : Dès qu'un agent clique sur "Insérer une fiche vierge", cette nouvelle fiche n'existe que dans son interface et n'est pas visible par les autres. Elle n'est enregistrée et potentiellement visible qu'après une première sauvegarde.
+
+3.  **Priorité des Rappels Personnels**
+    *   **Principe** : Un rappel personnel est un engagement pris par un agent spécifique envers un client.
+    *   **Comportement Attendu** : Les fiches associées à un rappel personnel **ne sont pas incluses** dans le pool de distribution automatique pour les autres agents. Elles restent assignées à l'agent qui les a programmées et n'apparaissent que dans sa liste de rappels personnels.
+
+---
+### Condition 5 : Gestion des Verrous et Fiches Orphelines (Nouveau)
+---
+
+Pour garantir qu'aucune fiche ne reste bloquée indéfiniment, le système applique les logiques de déverrouillage suivantes :
+
+1.  **Déconnexion Propre de l'Agent**
+    *   **Scénario** : Un agent se déconnecte en utilisant le bouton de déconnexion.
+    *   **Logique** : Le système vérifie s'il avait une fiche verrouillée.
+        *   **Si un appel a été passé** mais non qualifié sur cette fiche, la fiche est automatiquement qualifiée avec le statut système **`101 - Appel Non Qualifié (Système)`**. Elle est alors retirée du pool d'appel et mise en quarantaine pour validation par un superviseur.
+        *   **Si aucun appel n'a été passé**, la fiche est simplement déverrouillée et redevient immédiatement disponible pour les autres agents.
+
+2.  **Gestion des Verrous Orphelins (Timeout Configurable)**
+    *   **Scénario** : Un agent perd sa connexion, ferme son navigateur, ou son ordinateur plante (déconnexion non propre). La fiche reste verrouillée.
+    *   **Configuration** : Chaque campagne possède désormais un paramètre optionnel "Déverrouillage Automatique". S'il est activé, un superviseur peut définir un **délai de 5 à 60 minutes**.
+    *   **Logique** : Une tâche de maintenance vérifie périodiquement les fiches verrouillées.
+        *   Si une fiche est verrouillée depuis plus longtemps que le délai configuré pour sa campagne :
+            *   Le système vérifie si un appel a eu lieu. Si oui, la fiche est qualifiée avec **`101 - Appel Non Qualifié (Système)`**.
+            *   Sinon, la fiche est simplement déverrouillée et remise dans le pool d'appel.
+        *   Si la fonctionnalité est désactivée pour la campagne, la fiche restera verrouillée jusqu'à intervention manuelle d'un administrateur.
